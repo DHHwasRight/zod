@@ -184,6 +184,14 @@ fn build(input: DeriveInput) -> syn::Result<Tokens> {
         }
     });
 
+    let gives = parts.iter().map(|f| {
+        let ident = &f.ident;
+        let wire = &f.wire;
+        quote! {
+            (::std::string::String::from(#wire), ::zod::Give::give(&self.#ident))
+        }
+    });
+
     let described = parts.iter().map(|f| {
         let wire = &f.wire;
         let schema = &f.schema;
@@ -276,6 +284,12 @@ fn build(input: DeriveInput) -> syn::Result<Tokens> {
                         strict: #strict,
                     }),
                 )
+            }
+        }
+
+        impl #impl_generics ::zod::Give for #name #type_generics #where_clause {
+            fn give(&self) -> ::zod::Value {
+                ::zod::Value::Map(::std::vec![#(#gives),*])
             }
         }
 

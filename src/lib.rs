@@ -98,6 +98,7 @@
 #![deny(missing_docs)]
 
 pub mod flaw;
+pub mod give;
 pub mod node;
 pub mod number;
 pub mod report;
@@ -107,6 +108,7 @@ pub mod value;
 pub mod walk;
 
 pub use flaw::{Code, Fault, Faults, Flaw, Path, Step};
+pub use give::{write, Give};
 pub use node::{Field, Node, Object};
 pub use number::{Int, IntFacts, Real, RealFacts};
 pub use report::{

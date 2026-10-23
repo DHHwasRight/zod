@@ -100,6 +100,23 @@ struct Signup { /* .. */ }
 let page = Signup::enter(input)?;   // Err is the page
 ```
 
+## A value on the way out
+
+`Schema::read` turns input into a struct; `Give` turns a struct back into
+data, and `zod::write` renders it as JSON. The derive writes both, so one
+struct is the whole contract of an endpoint — what it takes, what it gives,
+and what a document says about either.
+
+```rust
+let made = Created { id: "0191a3f0-…".into(), seats: 3 };
+zod::write(&made.give());   // {"id":"0191a3f0-…","seats":3}
+```
+
+Fields come out in the order the struct declares them, because a body a
+person diffs should not reorder itself between two runs. No serde and no
+reflection: the derive read the fields, and a field's type says how to
+render itself.
+
 ## A schema describes itself
 
 ```rust
@@ -297,7 +314,7 @@ still reach: `Handle::RULES` is a value.
   `loose()`.
 - `Input::form` `query` `env` `json`, and `Refusal` with four shipped kinds.
 
-88 tests. No dependency outside the standard library except `syn` for the
+97 tests. No dependency outside the standard library except `syn` for the
 derive (default, `default-features = false` drops it) and `serde_json` behind
 the `json` feature.
 

@@ -360,3 +360,78 @@ fn a_schema_built_by_hand_describes_itself_too() {
     assert_eq!(object.fields[0].label, Some("Your name"));
     assert_eq!(object.fields.len(), 2);
 }
+
+// -- a value on its way out ----------------------------------------------
+
+#[test]
+fn a_struct_gives_back_the_data_it_was_read_from() {
+    use zod::Give;
+
+    let signup = Signup::parse(sent("ada-lovelace", 36)).unwrap();
+    let out = zod::write(&signup.give());
+
+    assert_eq!(
+        out,
+        concat!(
+            r#"{"handle":"ada-lovelace","email":"ada@example.com","age":36,"#,
+            r#""quantity":2,"ratio":0.5,"tags":["one"],"note":null,"subscribed":true}"#
+        )
+    );
+}
+
+#[test]
+fn what_a_struct_gives_is_what_it_reads_back() {
+    use zod::Give;
+
+    let signup = Signup::parse(sent("ada-lovelace", 36)).unwrap();
+    let again = Signup::parse(Input::typed(signup.give())).unwrap();
+    assert_eq!(signup, again);
+}
+
+#[test]
+fn a_nested_struct_gives_a_nested_object() {
+    use zod::Give;
+
+    #[derive(Entry, Debug)]
+    struct Address {
+        #[text(filled)]
+        street: String,
+    }
+
+    #[derive(Entry, Debug)]
+    struct Order {
+        #[nested]
+        ship_to: Address,
+        #[check(zod::list(zod::nested::<Address>()))]
+        also: Vec<Address>,
+    }
+
+    let order = Order {
+        ship_to: Address {
+            street: "1 Main".into(),
+        },
+        also: vec![Address {
+            street: "2 Side".into(),
+        }],
+    };
+    assert_eq!(
+        zod::write(&order.give()),
+        r#"{"ship_to":{"street":"1 Main"},"also":[{"street":"2 Side"}]}"#
+    );
+}
+
+#[test]
+fn the_wire_name_is_the_one_that_goes_out_too() {
+    use zod::Give;
+
+    #[derive(Entry, Debug)]
+    struct Renamed {
+        #[name("phone_number")]
+        phone: Option<String>,
+    }
+
+    let it = Renamed {
+        phone: Some("555".into()),
+    };
+    assert_eq!(zod::write(&it.give()), r#"{"phone_number":"555"}"#);
+}
