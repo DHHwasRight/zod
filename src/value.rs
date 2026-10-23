@@ -10,6 +10,8 @@
 
 use std::fmt;
 
+use crate::walk::Shape;
+
 /// Input of a type the schema has not yet confirmed.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
@@ -62,47 +64,6 @@ impl Value {
             Value::Map(fields) => fields.iter().map(|(k, _)| k.clone()).collect(),
             _ => Vec::new(),
         }
-    }
-
-    /// Read an `application/x-www-form-urlencoded` body.
-    ///
-    /// Every field arrives as [`Value::Text`], because a form carries no
-    /// types. A field with no value becomes [`Value::Null`]. A name that
-    /// repeats becomes a [`Value::List`], in arrival order, which is what a
-    /// group of checkboxes sends.
-    pub fn from_form(body: &str) -> Value {
-        let mut fields: Vec<(String, Value)> = Vec::new();
-        for pair in body.split('&') {
-            if pair.is_empty() {
-                continue;
-            }
-            let (raw_name, raw_value) = match pair.find('=') {
-                Some(i) => (&pair[..i], Some(&pair[i + 1..])),
-                None => (pair, None),
-            };
-            let name = unescape(raw_name);
-            let value = match raw_value {
-                None => Value::Null,
-                Some("") => Value::Null,
-                Some(text) => Value::Text(unescape(text)),
-            };
-            match fields.iter_mut().find(|(k, _)| *k == name) {
-                Some((_, held)) => match held {
-                    Value::List(items) => items.push(value),
-                    other => {
-                        let first = std::mem::replace(other, Value::Null);
-                        *other = Value::List(vec![first, value]);
-                    }
-                },
-                None => fields.push((name, value)),
-            }
-        }
-        Value::Map(fields)
-    }
-
-    /// Read a query string. Same rules as a form, which is the same format.
-    pub fn from_query(query: &str) -> Value {
-        Value::from_form(query.strip_prefix('?').unwrap_or(query))
     }
 }
 
@@ -228,4 +189,115 @@ impl From<serde_json::Value> for Value {
             ),
         }
     }
+}
+
+/// Input, and what it is made of.
+///
+/// A schema needs both. The value carries the data; the shape says whether
+/// the source kept its types. One schema reads a JSON body and a form
+/// because the shape, not the schema, decides whether `"36"` may become a
+/// number.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Input {
+    /// The data.
+    pub value: Value,
+    /// What the source is made of.
+    pub shape: Shape,
+}
+
+impl Input {
+    /// Input that kept its types: JSON, or a value the program built.
+    pub const fn typed(value: Value) -> Input {
+        Input {
+            value,
+            shape: Shape::Typed,
+        }
+    }
+
+    /// Input that is text throughout: a form, a query string, an
+    /// environment.
+    pub const fn flat(value: Value) -> Input {
+        Input {
+            value,
+            shape: Shape::Flat,
+        }
+    }
+
+    /// Read an `application/x-www-form-urlencoded` body.
+    ///
+    /// Every field arrives as [`Value::Text`], because a form carries no
+    /// types. A field with no value becomes [`Value::Null`]. A name that
+    /// repeats becomes a [`Value::List`], in arrival order, which is what a
+    /// group of checkboxes sends.
+    pub fn form(body: &str) -> Input {
+        Input::flat(pairs(body))
+    }
+
+    /// Read a query string. Same rules as a form, which is the same format.
+    pub fn query(query: &str) -> Input {
+        Input::flat(pairs(query.strip_prefix('?').unwrap_or(query)))
+    }
+
+    /// Read the environment, keeping the names that start with the prefix
+    /// and dropping the prefix from each one.
+    ///
+    /// `ZOD_PORT=8080` under the prefix `ZOD_` becomes the field `PORT`.
+    pub fn env(prefix: &str) -> Input {
+        let fields = std::env::vars()
+            .filter_map(|(k, v)| k.strip_prefix(prefix).map(|name| (name.to_string(), v)))
+            .map(|(k, v)| {
+                (
+                    k,
+                    if v.is_empty() {
+                        Value::Null
+                    } else {
+                        Value::Text(v)
+                    },
+                )
+            })
+            .collect();
+        Input::flat(Value::Map(fields))
+    }
+
+    /// Read a JSON document.
+    #[cfg(feature = "json")]
+    pub fn json(value: serde_json::Value) -> Input {
+        Input::typed(Value::from(value))
+    }
+}
+
+impl<T: Into<Value>> From<T> for Input {
+    fn from(value: T) -> Input {
+        Input::typed(value.into())
+    }
+}
+
+/// `name=value` pairs, as a form and a query string both write them.
+fn pairs(body: &str) -> Value {
+    let mut fields: Vec<(String, Value)> = Vec::new();
+    for pair in body.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_name, raw_value) = match pair.find('=') {
+            Some(i) => (&pair[..i], Some(&pair[i + 1..])),
+            None => (pair, None),
+        };
+        let name = unescape(raw_name);
+        let value = match raw_value {
+            None | Some("") => Value::Null,
+            Some(text) => Value::Text(unescape(text)),
+        };
+        match fields.iter_mut().find(|(k, _)| *k == name) {
+            Some((_, held)) => match held {
+                Value::List(items) => items.push(value),
+                other => {
+                    let first = std::mem::replace(other, Value::Null);
+                    *other = Value::List(vec![first, value]);
+                }
+            },
+            None => fields.push((name, value)),
+        }
+    }
+    Value::Map(fields)
 }

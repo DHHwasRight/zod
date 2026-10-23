@@ -1,30 +1,33 @@
 # zod
 
-Schemas a literal must satisfy while the crate compiles, and input must
-satisfy while it runs. One rule, written once, applied in both places.
+One rule, written once, run by the compiler on your literals and by the
+program on everything that arrives at its door.
 
 ```rust
-use zod::{Int, Text};
+use zod::{Entry, Input, Int, Problem, Text};
 
-const HANDLE: Text = Text::new().min(3).max(16).slug();
-const PORT: Int = Int::new().from(1).to(65535);
+#[derive(Entry)]
+#[entry(strict, refuse = Problem)]
+struct Signup {
+    #[check(Text::new().min(3).max(16).slug())]
+    #[label("Handle")]
+    #[says("Pick 3 to 16 lowercase letters, digits or hyphens")]
+    handle: String,
 
-zod::accepts!(HANDLE, "ada-lovelace");   // the compiler runs the rule
-zod::accepts!(PORT, 8080);
+    #[check(Int::new().from(13).to(130))]
+    age: i64,
+
+    subscribed: bool,
+}
+
+let signup = Signup::enter(Input::form(body))?;   // a form
+let signup = Signup::enter(Input::json(body))?;   // a JSON body
+let signup = Signup::enter(Input::env("APP_"))?;  // the environment
 ```
 
-Change `"ada-lovelace"` to `"A"` and the build stops:
-
-```
-error[E0080]: evaluation panicked: too short
- --> src/main.rs:6:1
-  |
-6 | zod::accepts!(HANDLE, "A");
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed inside this call
-```
-
-The same `HANDLE` reads a form field, a JSON body or a query string at run
-time, and reports every fault with the path that locates it.
+The error type of `enter` is whatever the refusal builds. With `Problem` it
+is already an HTTP answer: status 422, `application/problem+json`, one entry
+per fault with its path, its code and the numbers it compared.
 
 ## Is there already something?
 
@@ -60,6 +63,91 @@ although every rule they express is decidable right there.
 This crate is that value. A `Text` or an `Int` is an ordinary `const` you can
 store, pass and compose, and every method on it is a `const fn`.
 
+```rust
+const HANDLE: Text = Text::new().min(3).max(16).slug();
+
+zod::accepts!(HANDLE, "ada-lovelace");
+```
+
+Change it to `"A"` and the build stops:
+
+```
+error[E0080]: evaluation panicked: too short
+ --> src/main.rs:6:1
+  |
+6 | zod::accepts!(HANDLE, "A");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed inside this call
+```
+
+The same `HANDLE` goes in a `#[check(...)]`, where it reads the wire.
+
+## One struct, every source
+
+`Input` carries the data and says what the source is made of. That, not the
+schema, decides whether text may become a number.
+
+| Source | Shape | Text becomes a number |
+|---|---|---|
+| `Input::json(v)` | typed | no — a JSON body that sends `"36"` has a bug, and hiding it makes it permanent |
+| `Input::form(body)` | flat | yes — a form has no types to lose |
+| `Input::query("?page=2")` | flat | yes |
+| `Input::env("APP_")` | flat | yes |
+| `Value` you built | typed | no |
+
+A field that must accept text from a typed source says so itself, with
+`.loose()`.
+
+Three form rules worth knowing, each of them a bug somebody has shipped: a
+field with no value is nothing, not empty text; a name that repeats becomes a
+list, which is what a group of checkboxes sends; an unticked checkbox sends
+nothing at all, and a boolean reads that as false.
+
+## The refusal
+
+Every entrance carries one, so no boundary in the program invents its own.
+
+| Refusal | Gives back |
+|---|---|
+| `Summary` (the default) | `String`, one line per fault |
+| `Fields` | `Vec<(field, Vec<message>)>`, for a form that redraws itself |
+| `Problem` | `Refused { status, content_type, body }`, RFC 9457 |
+| `Raw` | the `Faults` themselves |
+| any `Fn(&Faults) -> T` | whatever you build: a page, a template, a log line |
+
+```rust
+let page = |faults: &Faults| render("signup.html", faults.by_name());
+
+let signup = schema.enter(input, &page)?;   // Err is the page
+```
+
+`#[entry(refuse = Type)]` attaches one to a struct; `Schema::enter` takes one
+for a schema built by hand. Write `Wording` for another language, and
+`say_all(&faults, &wording)` words every fault with it.
+
+## Faults
+
+Every fault, never only the first, each with the path that finds it and the
+name a person reads.
+
+```rust
+let faults = Signup::parse(body).unwrap_err();
+
+faults.to_string();
+// 3 faults:
+//   Handle: Pick 3 to 16 lowercase letters, digits or hyphens
+//   Email address: an email address
+//   people.0.age: above the maximum (130, found 200)
+
+faults.by_name();        // grouped for a person
+faults.by_path();        // grouped for a form
+faults.at("age");        // one field
+```
+
+A `Flaw` carries `code`, `says`, `limit` and `found` as separate fields, so a
+caller can write its own message in its own language without parsing a
+string. `#[says("...")]` replaces three machine messages on one field with
+one sentence a person can act on.
+
 ## The two questions
 
 Libraries confuse these. They are different questions with different answers.
@@ -70,10 +158,8 @@ Libraries confuse these. They are different questions with different answers.
   conversion. The compiler settled the type already.
 
 ```rust
-let schema = object((("name", NAME), ("age", AGE)));
-
-schema.parse(Value::from_form("name=Ada&age=36"))?;  // from the wire
-schema.check(&("Ada".to_string(), 36))               // from your own code
+Signup::parse(Input::form(body))?;   // from the wire
+held.check()                         // from your own code
 ```
 
 A caller that built the value itself has already settled the first question.
@@ -102,67 +188,36 @@ fault.
 This is `nutype`'s guarantee, plus the compile-time half, plus a rule you can
 still reach: `Handle::RULES` is a value.
 
-## Input
-
-```rust
-Value::from_form("name=Ada+Lovelace&age=36&subscribed=on")
-Value::from_query("?page=2")
-Value::from(json)   // with the "json" feature
-```
-
-A form carries no types, so every field arrives as text and a schema converts
-it where it says to: `text_int`, `text_real`, `text_bool`. Conversion is never
-silent. A JSON body that sends `"36"` for a number is a bug in the sender, and
-a schema that hides it makes the bug permanent.
-
-Form rules worth knowing: a field with no value is nothing, not empty text; a
-repeated name becomes a list, which is what a group of checkboxes sends; an
-unticked checkbox sends nothing at all, and `text_bool` reads that as false.
-
-## Faults
-
-Every fault, never only the first, each with the path that finds it.
-
-```rust
-let faults = schema.parse(body).unwrap_err();
-
-faults.to_string();
-// 2 faults:
-//   name: too short (1, found 0)
-//   people.0.age: above the maximum (130, found 200)
-
-faults.by_path();   // [("name", ["too short (1, found 0)"]), ...]
-```
-
-A `Flaw` carries `code`, `says`, `limit` and `found` as separate fields, so a
-caller can write its own message in its own language without parsing a string.
-
 ## What is here
 
+- `#[derive(Entry)]` — the struct is the schema. `#[check]`, `#[nested]`,
+  `#[name]`, `#[label]`, `#[says]` on a field; `#[entry(strict, refuse = _)]`
+  on the struct. A field with no attribute reads by its own type.
 - `Text` — `min` `max` `len` `filled` `starts` `ends` `holds`, and the shapes
   `ascii` `alnum` `digits` `hex` `lower` `upper` `slug` `email` `uuid` `date`.
   Every one of them `const`.
-- `Int` — `from` `to` `positive` `negative` `unsigned` `step`.
-- `Real` — `from` `to` `positive` `wild`. Finite by default, because `NaN`
-  passing a range check is a bug every time.
-- `object(...)` up to twelve fields, `strict()`, `list()`, `optional()`,
-  `or(default)`, `refine(says, test)`.
-- `Value::from_form`, `from_query`, and `From<serde_json::Value>`.
+- `Int`, and `Int::of::<u8>()` for every other integer width, which refuses a
+  number that would not survive the cast. `Real`, finite by default, because
+  `NaN` passing a range check is a bug every time.
+- `object(...)` up to twelve fields for a schema with no struct behind it,
+  `list()`, `optional()`, `or(default)`, `refine()`, `says()`, `label()`,
+  `loose()`.
+- `Input::form` `query` `env` `json`, and `Refusal` with four shipped kinds.
 
-43 tests, no dependency outside the standard library unless you turn on
-`json`.
+67 tests. No dependency outside the standard library except `syn` for the
+derive (default, `default-features = false` drops it) and `serde_json` behind
+the `json` feature.
 
 ## What is not here yet
 
 - **No regular expression.** A regex engine cannot run inside the compiler,
   and a rule that works only at run time does not belong in the const layer.
   Use `refine` for now.
-- **No derive.** `object(...)` returns a tuple. A `#[derive(Check)]` that puts
-  the rules on a real struct's fields is the next piece, and needs a
-  proc-macro crate beside this one.
-- **No unions, no maps with dynamic keys, no transforms.** A transform
-  changes the type, which makes `check` ill-defined; it needs a design, not
-  an afternoon.
+- **No unions and no enums.** `#[derive(Entry)]` refuses an enum, and says
+  why.
+- **No transforms.** A transform changes the type, which makes `check`
+  ill-defined. It needs a design, not an afternoon.
+- **No map with dynamic keys.**
 - **`u128` above `i128::MAX`** does not fit the comparison and is refused
   rather than wrapped.
 

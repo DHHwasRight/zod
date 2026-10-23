@@ -2,7 +2,8 @@
 //!
 //! A [`Flaw`] is the const half: a `Copy` record with no allocation, so a
 //! rule can produce one while the compiler evaluates it. A [`Fault`] is the
-//! run-time half: a flaw plus the path that locates it inside a larger value.
+//! run-time half: a flaw, the path that locates it, and the name a person
+//! would use for that place.
 
 use core::fmt;
 
@@ -88,15 +89,19 @@ impl Flaw {
             found,
         }
     }
+
+    /// True when the numbers mean something for this code.
+    pub const fn counts(&self) -> bool {
+        matches!(self.code, Code::TooSmall | Code::TooBig | Code::NotMultiple)
+    }
 }
 
 impl fmt::Display for Flaw {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.code {
-            Code::TooSmall | Code::TooBig | Code::NotMultiple => {
-                write!(f, "{} ({}, found {})", self.says, self.limit, self.found)
-            }
-            _ => f.write_str(self.says),
+        if self.counts() {
+            write!(f, "{} ({}, found {})", self.says, self.limit, self.found)
+        } else {
+            f.write_str(self.says)
         }
     }
 }
@@ -148,6 +153,11 @@ impl Path {
     pub fn is_root(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The last step, which is the field the fault belongs to.
+    pub fn last(&self) -> Option<&Step> {
+        self.0.last()
+    }
 }
 
 impl fmt::Display for Path {
@@ -162,21 +172,34 @@ impl fmt::Display for Path {
     }
 }
 
-/// A flaw and the place it was found.
+/// A flaw, the place it was found, and the name a person would use for it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fault {
     /// The broken rule.
     pub flaw: Flaw,
     /// Where it broke.
     pub path: Path,
+    /// What to call that place when a person reads the message. The schema
+    /// sets it with `label`; without one, the path is the name.
+    pub label: Option<&'static str>,
+}
+
+impl Fault {
+    /// The name of the place, for a person.
+    pub fn name(&self) -> String {
+        match self.label {
+            Some(label) => label.to_string(),
+            None => self.path.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.path.is_root() {
+        if self.path.is_root() && self.label.is_none() {
             write!(f, "{}", self.flaw)
         } else {
-            write!(f, "{}: {}", self.path, self.flaw)
+            write!(f, "{}: {}", self.name(), self.flaw)
         }
     }
 }
@@ -194,11 +217,6 @@ impl Faults {
         Faults(Vec::new())
     }
 
-    /// One fault at the given path.
-    pub fn one(flaw: Flaw, path: Path) -> Faults {
-        Faults(vec![Fault { flaw, path }])
-    }
-
     /// Every flaw, all at the value itself.
     pub fn at_root(flaws: Vec<Flaw>) -> Faults {
         Faults(
@@ -207,17 +225,15 @@ impl Faults {
                 .map(|flaw| Fault {
                     flaw,
                     path: Path::root(),
+                    label: None,
                 })
                 .collect(),
         )
     }
 
-    /// Record a flaw at the path the walk currently sits on.
-    pub fn add(&mut self, flaw: Flaw, path: &Path) {
-        self.0.push(Fault {
-            flaw,
-            path: path.clone(),
-        });
+    /// Record one fault.
+    pub fn push(&mut self, fault: Fault) {
+        self.0.push(fault);
     }
 
     /// Take every fault from another set.
@@ -240,6 +256,14 @@ impl Faults {
         &self.0
     }
 
+    /// The faults at one place, by the path written with dots.
+    pub fn at(&self, path: &str) -> Vec<&Fault> {
+        self.0
+            .iter()
+            .filter(|f| f.path.to_string() == path)
+            .collect()
+    }
+
     /// `Ok(())` when the value passed, so a caller can use `?`.
     pub fn ok(self) -> Result<(), Faults> {
         if self.is_empty() {
@@ -249,11 +273,21 @@ impl Faults {
         }
     }
 
-    /// The messages, grouped by path, for a form that shows errors per field.
+    /// The messages, grouped by path, for a form that shows errors next to
+    /// the input that caused them.
     pub fn by_path(&self) -> Vec<(String, Vec<String>)> {
+        self.grouped(|fault| fault.path.to_string())
+    }
+
+    /// The messages, grouped by the name a person reads.
+    pub fn by_name(&self) -> Vec<(String, Vec<String>)> {
+        self.grouped(|fault| fault.name())
+    }
+
+    fn grouped(&self, key_of: impl Fn(&Fault) -> String) -> Vec<(String, Vec<String>)> {
         let mut out: Vec<(String, Vec<String>)> = Vec::new();
         for fault in &self.0 {
-            let key = fault.path.to_string();
+            let key = key_of(fault);
             match out.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, list)) => list.push(fault.flaw.to_string()),
                 None => out.push((key, vec![fault.flaw.to_string()])),
@@ -269,6 +303,15 @@ impl IntoIterator for Faults {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Faults {
+    type Item = &'a Fault;
+    type IntoIter = std::slice::Iter<'a, Fault>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 

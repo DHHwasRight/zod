@@ -1,7 +1,7 @@
 //! Reading input nobody has proven yet, and checking values the program
 //! already holds.
 
-use zod::{list, object, text_bool, text_int, Int, Real, Schema, Text, Value};
+use zod::{boolean, list, object, Input, Int, Real, Schema, Text, Value};
 
 const NAME: Text = Text::new().min(1).max(40);
 const AGE: Int = Int::new().from(0).to(130);
@@ -170,12 +170,8 @@ fn check_and_parse_cannot_disagree() {
 
 #[test]
 fn a_form_arrives_as_text_and_a_schema_converts_it_on_purpose() {
-    let form = Value::from_form("name=Ada+Lovelace&age=36&subscribed=on");
-    let schema = object((
-        ("name", NAME),
-        ("age", text_int(AGE)),
-        ("subscribed", text_bool()),
-    ));
+    let form = Input::form("name=Ada+Lovelace&age=36&subscribed=on");
+    let schema = object((("name", NAME), ("age", AGE), ("subscribed", boolean())));
 
     let (name, age, subscribed) = schema.parse(form).unwrap();
     assert_eq!(name, "Ada Lovelace");
@@ -185,8 +181,8 @@ fn a_form_arrives_as_text_and_a_schema_converts_it_on_purpose() {
 
 #[test]
 fn an_unticked_checkbox_sends_nothing_and_means_false() {
-    let form = Value::from_form("name=Ada");
-    let schema = object((("name", NAME), ("subscribed", text_bool())));
+    let form = Input::form("name=Ada");
+    let schema = object((("name", NAME), ("subscribed", boolean())));
 
     let (_, subscribed) = schema.parse(form).unwrap();
     assert!(!subscribed);
@@ -194,7 +190,7 @@ fn an_unticked_checkbox_sends_nothing_and_means_false() {
 
 #[test]
 fn a_form_decodes_percent_escapes_and_plus() {
-    let form = Value::from_form("who=Ada%20Lovelace&what=caf%C3%A9+au+lait");
+    let form = Input::form("who=Ada%20Lovelace&what=caf%C3%A9+au+lait");
     let schema = object((("who", Text::new()), ("what", Text::new())));
 
     let (who, what) = schema.parse(form).unwrap();
@@ -204,7 +200,7 @@ fn a_form_decodes_percent_escapes_and_plus() {
 
 #[test]
 fn a_repeated_form_field_becomes_a_list() {
-    let form = Value::from_form("tag=one&tag=two&tag=three");
+    let form = Input::form("tag=one&tag=two&tag=three");
     let schema = object((("tag", list(Text::new()).min(1)),));
 
     let (tags,) = schema.parse(form).unwrap();
@@ -213,8 +209,8 @@ fn a_repeated_form_field_becomes_a_list() {
 
 #[test]
 fn an_empty_form_field_is_nothing_not_empty_text() {
-    let form = Value::from_form("name=&age=36");
-    let schema = object((("name", NAME.optional()), ("age", text_int(AGE))));
+    let form = Input::form("name=&age=36");
+    let schema = object((("name", NAME.optional()), ("age", AGE)));
 
     let (name, age) = schema.parse(form).unwrap();
     assert_eq!(name, None);
@@ -223,8 +219,8 @@ fn an_empty_form_field_is_nothing_not_empty_text() {
 
 #[test]
 fn text_that_is_not_a_number_says_so_rather_than_panicking() {
-    let form = Value::from_form("age=thirty");
-    let schema = object((("age", text_int(AGE)),));
+    let form = Input::form("age=thirty");
+    let schema = object((("age", AGE),));
 
     let faults = schema.parse(form).unwrap_err();
     assert_eq!(faults.all()[0].path.to_string(), "age");
@@ -233,7 +229,49 @@ fn text_that_is_not_a_number_says_so_rather_than_panicking() {
 
 #[test]
 fn a_query_string_reads_like_a_form_with_or_without_the_question_mark() {
-    assert_eq!(Value::from_query("?a=1"), Value::from_form("a=1"));
+    assert_eq!(Input::query("?a=1"), Input::form("a=1"));
+}
+
+#[test]
+fn one_schema_reads_a_form_and_a_typed_body_without_changing() {
+    let schema = object((("name", NAME), ("age", AGE)));
+
+    let from_form = schema.parse(Input::form("name=Ada&age=36")).unwrap();
+    let from_typed = schema
+        .parse(Value::Map(vec![
+            ("name".into(), Value::Text("Ada".into())),
+            ("age".into(), Value::Int(36)),
+        ]))
+        .unwrap();
+
+    assert_eq!(from_form, from_typed);
+}
+
+#[test]
+fn typed_input_does_not_read_text_as_a_number() {
+    let schema = object((("age", AGE),));
+    let typed = Value::Map(vec![("age".into(), Value::Text("36".into()))]);
+
+    let faults = schema.parse(typed.clone()).unwrap_err();
+    assert_eq!(faults.all()[0].flaw.code, zod::Code::WrongType);
+
+    // Unless the schema says to, for an API that must keep accepting it.
+    let lenient = object((("age", AGE.loose()),));
+    assert_eq!(lenient.parse(typed).unwrap().0, 36);
+}
+
+#[test]
+fn an_absent_field_says_it_is_missing_not_that_it_is_the_wrong_type() {
+    let schema = object((("name", NAME),));
+    let faults = schema.parse(Value::Map(Vec::new())).unwrap_err();
+    assert_eq!(faults.all()[0].flaw.code, zod::Code::Missing);
+}
+
+#[test]
+fn a_form_sends_one_value_for_a_list_of_one() {
+    let schema = object((("tag", list(Text::new()).min(1)),));
+    let (tags,) = schema.parse(Input::form("tag=only")).unwrap();
+    assert_eq!(tags, vec!["only"]);
 }
 
 #[test]

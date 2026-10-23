@@ -1,3 +1,6 @@
+[workspace]
+members = ["derive"]
+
 [package]
 name = "zod"
 version = "0.1.0"
@@ -8,7 +11,9 @@ description = "Schemas that a literal must satisfy at compile time and input mus
 
 [dependencies]
 serde_json = { version = "1", optional = true }
+zod-derive = { version = "0.1.0", path = "derive", optional = true }
 
 [features]
-default = []
+default = ["derive"]
+derive = ["dep:zod-derive"]
 json = ["dep:serde_json"]

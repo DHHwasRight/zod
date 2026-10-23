@@ -9,21 +9,58 @@
 //!
 //! That is what this crate is.
 //!
+//! # The compiler runs the rule
+//!
 //! ```
 //! use zod::{Int, Text};
 //!
 //! const HANDLE: Text = Text::new().min(3).max(16).slug();
 //! const PORT: Int = Int::new().from(1).to(65535);
 //!
-//! // The compiler runs the rule. Change "ada-lovelace" to "a" and this
-//! // file stops compiling.
+//! // Change "ada-lovelace" to "a" and this file stops compiling.
 //! zod::accepts!(HANDLE, "ada-lovelace");
 //! zod::accepts!(PORT, 8080);
-//!
-//! // The same rule, against something only known at run time.
-//! assert!(HANDLE.faults("ada-lovelace").is_empty());
-//! assert_eq!(HANDLE.faults("A").len(), 2); // too short, and not a slug
 //! ```
+//!
+//! # The entrance runs the same rule
+//!
+//! A struct guards the boundary. Its fields hold the rules, and the struct
+//! itself holds what a refusal gives back, so no call site has to remember
+//! either.
+//!
+//! ```
+//! use zod::{Entry, Input, Int, Problem, Text};
+//!
+//! #[derive(Entry, Debug)]
+//! #[entry(strict, refuse = Problem)]
+//! struct Signup {
+//!     #[check(Text::new().min(3).max(16).slug())]
+//!     #[label("Handle")]
+//!     #[says("Pick 3 to 16 lowercase letters, digits or hyphens")]
+//!     handle: String,
+//!
+//!     #[check(Int::new().from(13).to(130))]
+//!     age: i64,
+//!
+//!     subscribed: bool,
+//! }
+//!
+//! // A form. Every field is text, so the schema converts.
+//! let ok = Signup::enter(Input::form("handle=ada-lovelace&age=36&subscribed=on"));
+//! assert_eq!(ok.unwrap().age, 36);
+//!
+//! // The same struct refuses, and the refusal is already an answer.
+//! let refused = Signup::enter(Input::form("handle=A&age=200")).unwrap_err();
+//! assert_eq!(refused.status, 422);
+//! assert_eq!(refused.content_type, "application/problem+json");
+//! ```
+//!
+//! The same `Signup` reads a JSON body through [`Input::json`], an
+//! environment through [`Input::env`], a query string through
+//! [`Input::query`], or a [`Value`] the program built. The shape of the
+//! input, not the schema, decides whether `"36"` may become a number: a
+//! form has no types to lose, and a JSON body that sends text for a number
+//! has a bug the schema will not hide.
 //!
 //! # The two questions
 //!
@@ -38,23 +75,54 @@
 //! `check` is the one a typed language needs most, and the one a Zod port
 //! leaves out. A caller that built the value itself has already settled the
 //! first question; re-parsing it throws away the proof.
+//!
+//! ```
+//! # use zod::{Entry, Int, Text};
+//! # #[derive(Entry, Debug)]
+//! # struct Signup {
+//! #     #[check(Text::new().min(3).max(16).slug())]
+//! #     handle: String,
+//! #     #[check(Int::new().from(13).to(130))]
+//! #     age: i64,
+//! # }
+//! let held = Signup { handle: "ada-lovelace".into(), age: 36 };
+//! assert!(held.sound());
+//! ```
+//!
+//! # Every fault, with the path that finds it
+//!
+//! A refusal never stops at the first fault. A form with three bad fields
+//! comes back once, not three times, and each fault carries the path that
+//! locates it (`people.0.email`) and the name a person reads.
 
 #![deny(missing_docs)]
 
 pub mod flaw;
 pub mod number;
+pub mod report;
 pub mod schema;
 pub mod text;
 pub mod value;
+pub mod walk;
 
 pub use flaw::{Code, Fault, Faults, Flaw, Path, Step};
 pub use number::{Int, Real};
-pub use schema::{
-    bool, list, object, text_bool, text_int, text_real, Bool, Fallback, FromText, List, Obj, Opt,
-    Refine, Schema,
+pub use report::{
+    all_missing, say_all, Fields, Plain, Problem, Raw, Refusal, Refused, Summary, Wording,
 };
-pub use text::{Shape, Text};
-pub use value::Value;
+pub use schema::{
+    boolean, list, nested, object, whole, Bool, Entry, Fallback, Labelled, List, Loose, Native,
+    Nested, Obj, Opt, Refine, Says, Schema, Whole,
+};
+pub use text::{Shape as TextShape, Text};
+pub use value::{Input, Value};
+pub use walk::{Shape, Walk};
+
+/// Make a struct read itself out of unknown input.
+///
+/// See [the macro's own documentation](zod_derive::Entry).
+#[cfg(feature = "derive")]
+pub use zod_derive::Entry;
 
 /// Refuse to compile when a literal breaks a rule.
 ///
