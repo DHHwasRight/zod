@@ -29,6 +29,95 @@ The error type of `enter` is whatever the refusal builds. With `Problem` it
 is already an HTTP answer: status 422, `application/problem+json`, one entry
 per fault with its path, its code and the numbers it compared.
 
+## Two ways to say the same rule
+
+```rust
+#[check(Text::new().min(3).max(16).slug())]   // the rule as a value
+#[text(min = 3, max = 16, slug)]              // the rule as an annotation
+```
+
+They build the same schema. The first is for a rule that is shared, named
+or reused — a `const` two structs point at is one rule, and the compiler can
+run it against a literal. The second is for a rule that belongs to one field
+and is read once, which is most of them.
+
+| | |
+|---|---|
+| `text` | `min` `max` `len` as numbers, `starts` `ends` `holds` as text, and one of `filled` `ascii` `alnum` `digits` `hex` `lower` `upper` `slug` `email` `uuid` `date` |
+| `int` | `min` `max` `step` as numbers, and `positive` `negative` `unsigned` |
+| `real` | `min` `max` as decimals, and `positive` `wild` |
+| `list` | `min` `max` as numbers, and `filled` |
+
+The type does the rest. An `Option<T>` field is optional and a `Vec<T>` field
+is a list, both read off the type as written, so the annotation describes one
+value and never repeats what the field already says:
+
+```rust
+#[text(min = 2)]
+#[list(min = 1, max = 3)]
+tags: Vec<String>,        // 1 to 3 tags, each at least 2 characters
+
+#[int(min = 1, max = 99)]
+quantity: u8,             // and a u8 keeps its own range whatever the rule said
+```
+
+## A callback the struct carries
+
+Two kinds, because a struct needs both.
+
+**A rule that needs every field at once**, for the checks no single field can
+make:
+
+```rust
+#[derive(Entry)]
+#[entry(rule = passwords_agree, says = "The two passwords are not the same")]
+struct Password {
+    #[text(min = 8)] password: String,
+    #[text(min = 8)] again: String,
+}
+
+fn passwords_agree(it: &Password) -> bool { it.password == it.again }
+```
+
+It runs after the fields and only on a value that exists. "The two dates are
+the wrong way round" means nothing while one of them is still not a date.
+
+**A refusal**, which turns every fault into whatever the boundary owes:
+
+```rust
+zod::refusal! {
+    pub SignupPage(faults) -> String {
+        faults.by_name().into_iter()
+            .map(|(name, says)| format!("<li>{name}: {}</li>", says.join("; ")))
+            .collect::<Vec<_>>().join("")
+    }
+}
+
+#[derive(Entry)]
+#[entry(refuse = SignupPage)]
+struct Signup { /* .. */ }
+
+let page = Signup::enter(input)?;   // Err is the page
+```
+
+## A schema describes itself
+
+```rust
+let node = Signup::describe();
+
+node.name();            // Some("Signup") — the struct's own name
+node.object().unwrap(); // fields, each with label, says, required, node
+node.named_parts();     // every named struct in the tree, once, outermost first
+```
+
+`required` is derived from the schema rather than declared, so the two cannot
+disagree: a field is required unless its schema accepts nothing. A `u8` field
+describes the range it actually accepts, not the one the rule wrote.
+
+This is what an OpenAPI document, a form widget and a command-line flag are
+all readings of. `Schema::node()` gives the same tree for a schema built by
+hand.
+
 ## Is there already something?
 
 Yes, and none of it is this. Figures read from crates.io on 23 October 2026.
@@ -190,9 +279,13 @@ still reach: `Handle::RULES` is a value.
 
 ## What is here
 
-- `#[derive(Entry)]` — the struct is the schema. `#[check]`, `#[nested]`,
-  `#[name]`, `#[label]`, `#[says]` on a field; `#[entry(strict, refuse = _)]`
+- `#[derive(Entry)]` — the struct is the schema. `#[check]` or
+  `#[text]`/`#[int]`/`#[real]`/`#[list]`, plus `#[nested]`, `#[name]`,
+  `#[label]`, `#[says]` on a field; `#[entry(strict, refuse = _, rule = _)]`
   on the struct. A field with no attribute reads by its own type.
+- `Schema::node()` and `Entry::describe()` — the rules as data, for a
+  document generator or a command-line builder. `zod::refusal!` names a
+  callback in three lines.
 - `Text` — `min` `max` `len` `filled` `starts` `ends` `holds`, and the shapes
   `ascii` `alnum` `digits` `hex` `lower` `upper` `slug` `email` `uuid` `date`.
   Every one of them `const`.
@@ -204,7 +297,7 @@ still reach: `Handle::RULES` is a value.
   `loose()`.
 - `Input::form` `query` `env` `json`, and `Refusal` with four shipped kinds.
 
-67 tests. No dependency outside the standard library except `syn` for the
+88 tests. No dependency outside the standard library except `syn` for the
 derive (default, `default-features = false` drops it) and `serde_json` behind
 the `json` feature.
 

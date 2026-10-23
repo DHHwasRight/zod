@@ -137,6 +137,28 @@ impl Default for Int {
     }
 }
 
+/// Every rule an [`Int`] carries, as plain data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct IntFacts {
+    /// The lowest value. [`i128::MIN`] for no rule.
+    pub min: i128,
+    /// The highest value. [`i128::MAX`] for no rule.
+    pub max: i128,
+    /// The step the value must be a multiple of. Zero for no rule.
+    pub step: i128,
+}
+
+impl Int {
+    /// Every rule this carries, for a reader rather than a checker.
+    pub const fn facts(&self) -> IntFacts {
+        IntFacts {
+            min: self.min,
+            max: self.max,
+            step: self.step,
+        }
+    }
+}
+
 /// What a decimal number must satisfy.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Real {
@@ -228,6 +250,28 @@ impl Real {
 impl Default for Real {
     fn default() -> Real {
         Real::new()
+    }
+}
+
+/// Every rule a [`Real`] carries, as plain data.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RealFacts {
+    /// The lowest value. Negative infinity for no rule.
+    pub min: f64,
+    /// The highest value. Infinity for no rule.
+    pub max: f64,
+    /// Whether infinity and `NaN` are refused.
+    pub finite: bool,
+}
+
+impl Real {
+    /// Every rule this carries, for a reader rather than a checker.
+    pub const fn facts(&self) -> RealFacts {
+        RealFacts {
+            min: self.min,
+            max: self.max,
+            finite: self.finite,
+        }
     }
 }
 

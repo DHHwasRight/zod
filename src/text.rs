@@ -309,6 +309,41 @@ impl Default for Text {
     }
 }
 
+/// Every rule a [`Text`] carries, as plain data.
+///
+/// The rules are private on `Text` so a builder method and a reader cannot
+/// share a name. A reader still has to exist, because a document generator
+/// and a command-line builder both have to see what a field allows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TextFacts {
+    /// Fewest characters. Zero for no rule.
+    pub min: usize,
+    /// Most characters. [`usize::MAX`] for no rule.
+    pub max: usize,
+    /// The shape the characters must take.
+    pub shape: Shape,
+    /// What the text must start with.
+    pub starts: Option<&'static str>,
+    /// What the text must end with.
+    pub ends: Option<&'static str>,
+    /// What the text must hold somewhere.
+    pub holds: Option<&'static str>,
+}
+
+impl Text {
+    /// Every rule this carries, for a reader rather than a checker.
+    pub const fn facts(&self) -> TextFacts {
+        TextFacts {
+            min: self.min,
+            max: self.max,
+            shape: self.shape,
+            starts: self.starts,
+            ends: self.ends,
+            holds: self.holds,
+        }
+    }
+}
+
 /// Stop the compile. Separate from `must_accept` so the panic sits in one
 /// place and the message stays a plain string.
 pub(crate) const fn refuse(says: &'static str) -> ! {

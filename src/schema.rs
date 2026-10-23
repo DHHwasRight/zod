@@ -15,6 +15,7 @@
 use std::marker::PhantomData;
 
 use crate::flaw::{Code, Faults, Flaw};
+use crate::node::{Field, Node, Object};
 use crate::number::{Int, Real};
 use crate::report::Refusal;
 use crate::text::Text;
@@ -33,6 +34,13 @@ pub trait Schema {
 
     /// Run the rules against a value that already has the right type.
     fn inspect(&self, value: &Self::Out, walk: &mut Walk);
+
+    /// What this schema allows, as data a program can read.
+    ///
+    /// A required method and not a provided one: a combinator that forgets
+    /// it would describe itself as whatever its default said, and a wrong
+    /// description is worse than none. See [`crate::node`].
+    fn node(&self) -> Node;
 
     /// Read unknown input, from the top.
     fn parse(&self, input: impl Into<Input>) -> Result<Self::Out, Faults>
@@ -176,6 +184,10 @@ impl Schema for Text {
     fn inspect(&self, value: &String, walk: &mut Walk) {
         note(self.faults(value), walk);
     }
+
+    fn node(&self) -> Node {
+        Node::Text(self.facts())
+    }
 }
 
 /// Pull a whole number out of input, converting text when the source has no
@@ -218,6 +230,10 @@ impl Schema for Int {
 
     fn inspect(&self, value: &i64, walk: &mut Walk) {
         note(self.faults(*value as i128), walk);
+    }
+
+    fn node(&self) -> Node {
+        Node::Int(narrowed(self.facts(), i64::MIN as i128, i64::MAX as i128))
     }
 }
 
@@ -284,6 +300,14 @@ macro_rules! wholes {
                 fn inspect(&self, value: &$t, walk: &mut Walk) {
                     note(self.rules.faults(*value as i128), walk);
                 }
+
+                fn node(&self) -> Node {
+                    Node::Int(narrowed(
+                        self.rules.facts(),
+                        <$t>::MIN as i128,
+                        <$t>::MAX as i128,
+                    ))
+                }
             }
 
             impl Native for $t {
@@ -327,6 +351,10 @@ impl Schema for Real {
     fn inspect(&self, value: &f64, walk: &mut Walk) {
         note(self.faults(*value), walk);
     }
+
+    fn node(&self) -> Node {
+        Node::Real(self.facts())
+    }
 }
 
 /// A boolean, which has no rule but its type.
@@ -367,6 +395,10 @@ impl Schema for Bool {
     }
 
     fn inspect(&self, _value: &bool, _walk: &mut Walk) {}
+
+    fn node(&self) -> Node {
+        Node::Bool
+    }
 }
 
 /// A schema that also accepts nothing.
@@ -389,6 +421,10 @@ impl<S: Schema> Schema for Opt<S> {
         if let Some(inner) = value {
             self.inner.inspect(inner, walk);
         }
+    }
+
+    fn node(&self) -> Node {
+        Node::Optional(Box::new(self.inner.node()))
     }
 }
 
@@ -420,6 +456,10 @@ where
     fn inspect(&self, value: &S::Out, walk: &mut Walk) {
         self.inner.inspect(value, walk);
     }
+
+    fn node(&self) -> Node {
+        Node::Defaulted(Box::new(self.inner.node()))
+    }
 }
 
 /// A schema with a rule the caller wrote.
@@ -449,6 +489,13 @@ impl<S: Schema> Schema for Refine<S> {
             walk.fault(Flaw::rule(Code::Custom, self.says));
         }
     }
+
+    fn node(&self) -> Node {
+        Node::Rule {
+            inner: Box::new(self.inner.node()),
+            says: self.says,
+        }
+    }
 }
 
 /// A schema whose faults all carry one sentence.
@@ -467,6 +514,13 @@ impl<S: Schema> Schema for Says<S> {
 
     fn inspect(&self, value: &S::Out, walk: &mut Walk) {
         walk.with_says(self.says, |walk| self.inner.inspect(value, walk));
+    }
+
+    fn node(&self) -> Node {
+        Node::Said {
+            inner: Box::new(self.inner.node()),
+            says: self.says,
+        }
     }
 }
 
@@ -487,6 +541,13 @@ impl<S: Schema> Schema for Labelled<S> {
     fn inspect(&self, value: &S::Out, walk: &mut Walk) {
         walk.with_label(self.label, |walk| self.inner.inspect(value, walk));
     }
+
+    fn node(&self) -> Node {
+        Node::Labelled {
+            inner: Box::new(self.inner.node()),
+            label: self.label,
+        }
+    }
 }
 
 /// A schema that converts text even when the input kept its types.
@@ -504,6 +565,12 @@ impl<S: Schema> Schema for Loose<S> {
 
     fn inspect(&self, value: &S::Out, walk: &mut Walk) {
         self.inner.inspect(value, walk);
+    }
+
+    /// Transparent: reading text as a number changes how input arrives,
+    /// not what the schema allows.
+    fn node(&self) -> Node {
+        self.inner.node()
     }
 }
 
@@ -603,6 +670,14 @@ impl<S: Schema> Schema for List<S> {
             walk.item(i, |walk| self.item.inspect(item, walk));
         }
     }
+
+    fn node(&self) -> Node {
+        Node::List {
+            item: Box::new(self.item.node()),
+            min: self.min,
+            max: self.max,
+        }
+    }
 }
 
 /// Named fields, read into a tuple.
@@ -688,6 +763,15 @@ macro_rules! objects {
                         let (name, schema) = &self.fields.$i;
                         walk.field(name, |walk| schema.inspect(&value.$i, walk));
                     })+
+                }
+
+                fn node(&self) -> Node {
+                    Node::Object(Object {
+                        fields: vec![$(
+                            Field::of(self.fields.$i.0, self.fields.$i.1.node()),
+                        )+],
+                        strict: self.strict,
+                    })
                 }
             }
         )+
@@ -779,6 +863,23 @@ pub trait Entry: Sized {
     /// Run the rules against a struct the program already holds.
     fn look(&self, walk: &mut Walk);
 
+    /// Run the rules that need every field at once.
+    ///
+    /// `#[entry(rule = f, says = "..")]` writes it, and a struct with no
+    /// such rule gets the empty one. It runs after the fields and on a
+    /// value that exists, which is the only order that works: "the two
+    /// dates are the wrong way round" means nothing while one of them is
+    /// still not a date.
+    fn look_whole(&self, walk: &mut Walk) {
+        let _ = walk;
+    }
+
+    /// What this struct allows, named after the struct.
+    ///
+    /// `#[derive(Entry)]` writes it, which is the only place in the crate
+    /// that knows what a struct is called.
+    fn describe() -> Node;
+
     /// Read unknown input, keeping every fault.
     fn parse(input: impl Into<Input>) -> Result<Self, Faults> {
         let input = input.into();
@@ -836,5 +937,22 @@ impl<T: Entry> Schema for Nested<T> {
 
     fn inspect(&self, value: &T, walk: &mut Walk) {
         value.look(walk);
+    }
+
+    fn node(&self) -> Node {
+        T::describe()
+    }
+}
+
+/// A whole-number rule, with the Rust type's own range folded in.
+///
+/// A `u8` field accepts 0 to 255 whatever the rule said, because the read
+/// refuses anything else before the rule runs. A document that printed the
+/// rule alone would promise a range the handler does not accept.
+fn narrowed(facts: crate::number::IntFacts, low: i128, high: i128) -> crate::number::IntFacts {
+    crate::number::IntFacts {
+        min: facts.min.max(low),
+        max: facts.max.min(high),
+        step: facts.step,
     }
 }

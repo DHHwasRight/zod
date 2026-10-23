@@ -98,6 +98,7 @@
 #![deny(missing_docs)]
 
 pub mod flaw;
+pub mod node;
 pub mod number;
 pub mod report;
 pub mod schema;
@@ -106,7 +107,8 @@ pub mod value;
 pub mod walk;
 
 pub use flaw::{Code, Fault, Faults, Flaw, Path, Step};
-pub use number::{Int, Real};
+pub use node::{Field, Node, Object};
+pub use number::{Int, IntFacts, Real, RealFacts};
 pub use report::{
     all_missing, say_all, Fields, Plain, Problem, Raw, Refusal, Refused, Summary, Wording,
 };
@@ -114,7 +116,7 @@ pub use schema::{
     boolean, list, nested, object, whole, Bool, Entry, Fallback, Labelled, List, Loose, Native,
     Nested, Obj, Opt, Refine, Says, Schema, Whole,
 };
-pub use text::{Shape as TextShape, Text};
+pub use text::{Shape as TextShape, Text, TextFacts};
 pub use value::{Input, Value};
 pub use walk::{Shape, Walk};
 
@@ -162,6 +164,56 @@ macro_rules! lit {
         const _: () = $schema.must_accept($value);
         $value
     }};
+}
+
+/// Name a callback that turns every fault into an answer.
+///
+/// A [`Refusal`](crate::Refusal) is a type, because an entrance carries one
+/// in its own type and a closure cannot be named there. Writing that type
+/// by hand is four lines of ceremony around one expression, so this writes
+/// them.
+///
+/// ```
+/// use zod::{Entry, Faults, Text};
+///
+/// zod::refusal! {
+///     /// The sign-up form, drawn again with the messages in place.
+///     pub SignupPage(faults) -> String {
+///         faults
+///             .by_name()
+///             .into_iter()
+///             .map(|(name, says)| format!("<li>{name}: {}</li>", says.join("; ")))
+///             .collect::<Vec<_>>()
+///             .join("")
+///     }
+/// }
+///
+/// #[derive(Entry, Debug)]
+/// #[entry(refuse = SignupPage)]
+/// struct Signup {
+///     #[text(min = 3, max = 16, slug)]
+///     handle: String,
+/// }
+///
+/// let page = Signup::enter(zod::Input::form("handle=A")).unwrap_err();
+/// assert!(page.starts_with("<li>handle: too short (3, found 1);"));
+/// ```
+#[macro_export]
+macro_rules! refusal {
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident($faults:ident) -> $out:ty $body:block
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Default, Debug)]
+        $vis struct $name;
+
+        impl $crate::Refusal for $name {
+            type Out = $out;
+
+            fn refuse(&self, $faults: &$crate::Faults) -> $out $body
+        }
+    };
 }
 
 /// A type whose values cannot exist unless the rules accept them.
