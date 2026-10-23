@@ -1,0 +1,14 @@
+[package]
+name = "zod"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "Schemas that a literal must satisfy at compile time and input must satisfy at run time."
+
+[dependencies]
+serde_json = { version = "1", optional = true }
+
+[features]
+default = []
+json = ["dep:serde_json"]
