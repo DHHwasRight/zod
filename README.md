@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/DHHwasRight/.github/main/profile/logo.png" width="96" alt="">
-</p>
-
 <h1 align="center">zod</h1>
 
 <p align="center">One rule, written once, run by the compiler on your literals and by the program on everything that arrives at its door.</p>
